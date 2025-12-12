@@ -34,6 +34,7 @@
 (define-constant min-bet-amount u1000000) ;; 1 STX minimum bet
 (define-constant max-question-length u500)
 (define-constant max-price-age u60) ;; 60 seconds for oracle price staleness
+(define-constant contract-owner tx-sender)
 
 ;; ================================================================================
 ;; DATA VARIABLES
@@ -47,7 +48,7 @@
 ;; DATA MAPS
 ;; ================================================================================
 
-;;  Module 1: Market Management - Market State Storage
+;; Module 1: Market Management - Market State Storage
 (define-map markets
   uint ;; market-id
   {
@@ -86,7 +87,7 @@
 (define-map admins principal bool)
 
 ;; Initialize contract deployer as first admin
-(map-set admins tx-sender true)
+(map-set admins contract-owner true)
 
 ;; ================================================================================
 ;; MODULE 5: ACCESS CONTROL
@@ -207,50 +208,56 @@
     (market-id uint)
     (side bool) ;; true = YES, false = NO
     (amount uint))
-  (let (
-    (market (unwrap! (map-get? markets market-id) err-market-not-found))
-    (totals (unwrap! (map-get? market-totals market-id) err-market-not-found))
-    (current-bets (default-to 
-      { yes-amount: u0, no-amount: u0, claimed: false }
-      (map-get? user-bets { market-id: market-id, user: tx-sender })))
-  )
-    ;; Validate market status
-    (asserts! (is-eq (get status market) "open") err-market-not-open)
-    (asserts! (< block-height (get deadline market)) err-deadline-passed)
+  (begin
+    ;; Validate market exists and is open
+    (let (
+      (market (unwrap! (map-get? markets market-id) err-market-not-found))
+    )
+      (asserts! (is-eq (get status market) "open") err-market-not-open)
+      (asserts! (< block-height (get deadline market)) err-deadline-passed))
     
     ;; Validate bet amount
     (asserts! (>= amount min-bet-amount) err-invalid-amount)
     
     ;; Transfer STX from user to contract
-    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    (unwrap! 
+      (stx-transfer? amount tx-sender (as-contract tx-sender))
+      err-insufficient-balance)
     
-    ;; Update user bets
-    (if side
-      ;; Betting on YES
-      (map-set user-bets { market-id: market-id, user: tx-sender }
-        (merge current-bets { yes-amount: (+ (get yes-amount current-bets) amount) }))
-      ;; Betting on NO
-      (map-set user-bets { market-id: market-id, user: tx-sender }
-        (merge current-bets { no-amount: (+ (get no-amount current-bets) amount) })))
-    
-    ;; Update market totals
-    (if side
-      (map-set market-totals market-id
-        (merge totals { yes-total: (+ (get yes-total totals) amount) }))
-      (map-set market-totals market-id
-        (merge totals { no-total: (+ (get no-total totals) amount) })))
-    
-    ;; Emit event
-    (print {
-      event: "bet-placed",
-      market-id: market-id,
-      user: tx-sender,
-      side: side,
-      amount: amount,
-      block-height: block-height
-    })
-    
-    (ok true)))
+    ;; Update user bets and market totals
+    (let (
+      (totals (unwrap! (map-get? market-totals market-id) err-market-not-found))
+      (current-bets (default-to 
+        { yes-amount: u0, no-amount: u0, claimed: false }
+        (map-get? user-bets { market-id: market-id, user: tx-sender })))
+    )
+      ;; Update user bets
+      (if side
+        ;; Betting on YES
+        (map-set user-bets { market-id: market-id, user: tx-sender }
+          (merge current-bets { yes-amount: (+ (get yes-amount current-bets) amount) }))
+        ;; Betting on NO
+        (map-set user-bets { market-id: market-id, user: tx-sender }
+          (merge current-bets { no-amount: (+ (get no-amount current-bets) amount) })))
+      
+      ;; Update market totals
+      (if side
+        (map-set market-totals market-id
+          (merge totals { yes-total: (+ (get yes-total totals) amount) }))
+        (map-set market-totals market-id
+          (merge totals { no-total: (+ (get no-total totals) amount) })))
+      
+      ;; Emit event
+      (print {
+        event: "bet-placed",
+        market-id: market-id,
+        user: tx-sender,
+        side: side,
+        amount: amount,
+        block-height: block-height
+      })
+      
+      (ok true))))
 
 (define-read-only (get-user-bets (market-id uint) (user principal))
   (ok (default-to
@@ -351,6 +358,10 @@
       )
         (ok (- gross-payout fee))))))
 
+;; Helper function to transfer from contract
+(define-private (transfer-payout (amount uint) (recipient principal))
+  (as-contract (stx-transfer? amount tx-sender recipient)))
+
 (define-public (claim-winnings (market-id uint))
   (let (
     (market (unwrap! (map-get? markets market-id) err-market-not-found))
@@ -366,8 +377,8 @@
     ;; Validate payout > 0
     (asserts! (> payout u0) err-not-winner)
     
-    ;; Transfer payout
-    (try! (as-contract (stx-transfer? payout tx-sender (contract-caller))))
+    ;; Transfer payout from contract to user
+    (unwrap! (transfer-payout payout tx-sender) err-payout-error)
     
     ;; Update claimed status
     (map-set user-bets { market-id: market-id, user: tx-sender }
@@ -398,8 +409,8 @@
     ;; Validate refund > 0
     (asserts! (> refund-amount u0) err-not-winner)
     
-    ;; Transfer refund (no fees)
-    (try! (as-contract (stx-transfer? refund-amount tx-sender (contract-caller))))
+    ;; Transfer refund from contract to user (no fees)
+    (unwrap! (transfer-payout refund-amount tx-sender) err-payout-error)
     
     ;; Update claimed status
     (map-set user-bets { market-id: market-id, user: tx-sender }
