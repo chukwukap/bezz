@@ -1,13 +1,18 @@
+```toml
 [project]
 name = "crypto-prediction-market"
-description = ""
-authors = []
+description = "Curated crypto-price prediction market on Stacks L2"
+authors = ["Prediction Market Team"]
 telemetry = false
 cache_dir = "./.cache"
 
-# [contracts.counter]
-# path = "contracts/counter.clar"
-# epoch = "latest"
+# External dependencies
+[[project.requirements]]
+contract_id = "SP2T5JKWWP3FYYX4JRG2SB8N7PEQN3YQRQV2QSZHH.pyth-oracle-v4"
+
+[contracts.prediction-market]
+path = "contracts/prediction-market.clar"
+epoch = "latest"
 
 [repl.analysis]
 passes = ["check_checker"]
@@ -20,3 +25,8 @@ check_checker = { trusted_sender = false, trusted_caller = false, callee_filter 
 # warning, if it gets checked inside. This check will also propagate up to the
 # caller.
 # More informations: https://www.hiro.so/blog/new-safety-checks-in-clarinet
+
+[repl.remote_data]
+enabled = false
+api_url = 'https://api.hiro.so'
+```
